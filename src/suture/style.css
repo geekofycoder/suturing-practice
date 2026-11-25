@@ -1,0 +1,540 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f4f6f7;
+  --surface: #ffffff;
+  --hover: #eef1f3;
+  --text: #14181c;
+  --muted: #4a5560;
+  --border: #d9dee3;
+  --border-strong: #b9c1c8;
+  --accent: #0f6e66;
+  --accent-text: #ffffff;
+  --accent-tint: #e3f2f0;
+  --danger: #c42a1d;
+  --danger-ink: #a3201a;
+  --danger-tint: #fdecea;
+  --stage: #12161a;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --radius: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1316;
+    --surface: #161b20;
+    --hover: #1e252b;
+    --text: #e8ecef;
+    --muted: #a3adb6;
+    --border: #2a3239;
+    --border-strong: #3d4851;
+    --accent: #46c2b4;
+    --accent-text: #06201d;
+    --accent-tint: #12302d;
+    --danger-ink: #ffb4ab;
+    --danger-tint: #3a1a17;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+}
+
+body {
+  margin: 0;
+  font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  caret-color: var(--accent);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--accent);
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.shell {
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 20px 16px 48px;
+}
+
+.top h1 {
+  margin: 0 0 4px;
+  font-size: 20px;
+  line-height: 1.25;
+  font-weight: 600;
+  text-wrap: balance;
+}
+
+.top p {
+  margin: 0 0 20px;
+  max-width: 70ch;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 24px;
+  align-items: start;
+}
+
+.stage-col {
+  position: sticky;
+  top: 16px;
+}
+
+/* ---- stage ---- */
+
+.stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--stage);
+}
+
+.stage video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+
+.stage.is-replay video {
+  display: none;
+}
+
+#scene,
+#ghost {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#ghost {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.landing {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(8, 12, 16, 0.6);
+}
+
+.landing-card {
+  display: grid;
+  gap: 12px;
+  max-width: 420px;
+  padding: 20px;
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: center;
+}
+
+.landing-card h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.landing-card p {
+  margin: 0;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+.landing-card .row {
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.hud {
+  position: absolute;
+  inset: 12px;
+  pointer-events: none;
+}
+
+.stage[data-mode='idle'] .hud {
+  display: none;
+}
+
+/* A hint is temporary, so it goes at the top; the instruction is one compact card at the bottom. */
+.hud-hint {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 8px 14px;
+  border-radius: var(--radius);
+  background: #ffb84d;
+  color: #1c1405;
+  font-weight: 600;
+  text-wrap: pretty;
+}
+
+.hud-card {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  gap: 2px;
+  padding: 8px 14px;
+  border-radius: var(--radius);
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+}
+
+.hud-card p {
+  margin: 0;
+  text-wrap: pretty;
+}
+
+.hud-step {
+  font-size: 12px;
+  font-weight: 600;
+  color: #bfe3de;
+}
+
+.hud-instruction {
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.status {
+  min-height: 1.5em;
+  margin: 10px 0 0;
+  color: var(--muted);
+}
+
+.error {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  background: var(--danger-tint);
+  color: var(--danger-ink);
+}
+
+/* ---- panel ---- */
+
+.panel {
+  min-width: 0;
+}
+
+.block {
+  padding: 16px 0;
+  border-top: 1px solid var(--border);
+}
+
+.block:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  line-height: 1.3;
+  font-weight: 600;
+}
+
+.muted {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  text-wrap: pretty;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+h2 + .row {
+  margin-top: 0;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+  margin-top: 10px;
+}
+
+.field > span {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+select {
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+input[type='checkbox'] {
+  accent-color: var(--accent);
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.check input {
+  flex: none;
+  margin-top: 3px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform 140ms var(--ease-out), background-color 140ms var(--ease-out), border-color 140ms var(--ease-out), color 140ms var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover:not(:disabled) {
+    background: var(--hover);
+  }
+
+  .btn.primary:hover:not(:disabled) {
+    background: var(--accent);
+    filter: brightness(1.08);
+  }
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.btn.small {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+/* ---- procedure ---- */
+
+.steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+
+.steps li {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--muted);
+  transition: background-color 140ms var(--ease-out), border-color 140ms var(--ease-out), color 140ms var(--ease-out);
+}
+
+.steps .num {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.steps li[data-state='now'] {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+  color: var(--text);
+}
+
+.steps li[data-state='now'] .num {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.steps li[data-state='done'] {
+  color: var(--text);
+}
+
+.steps li[data-state='done'] .num {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.steps .what {
+  font-weight: 500;
+}
+
+.steps .more {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+.dots {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.dots .label {
+  margin-right: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.dot {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  transition: background-color 140ms var(--ease-out), border-color 140ms var(--ease-out), color 140ms var(--ease-out);
+}
+
+.dot[data-state='now'] {
+  border-color: var(--accent);
+  color: var(--text);
+  background: var(--accent-tint);
+}
+
+.dot[data-state='done'] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  margin: 8px 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats dt {
+  color: var(--muted);
+}
+
+.stats dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 600;
+}
+
+.settings summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.settings[open] summary {
+  margin-bottom: 4px;
+}
+
+/* ---- narrow screens ---- */
+
+@media (max-width: 980px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .stage-col {
+    position: static;
+  }
+}
+
+/* The pad is small there; the instruction is in the step list below, so keep only the step chip and any hint over it. */
+@media (max-width: 700px) {
+  .hud .hud-instruction {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}

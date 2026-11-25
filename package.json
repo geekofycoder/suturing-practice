@@ -1,0 +1,18 @@
+{
+  "name": "suturing-practice",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Suturing practice in the browser: your pinch points hold a virtual needle holder and forceps, guided through five interrupted stitches on a wound pad.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "check": "tsc --noEmit",
+    "preview": "vite preview",
+    "deploy": "node scripts/deploy.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vite": "8.3.8"
+  }
+}
