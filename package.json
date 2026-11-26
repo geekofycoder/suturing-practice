@@ -3,13 +3,14 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "Suturing practice in the browser: your pinch points hold a virtual needle holder and forceps, guided through five interrupted stitches on a wound pad.",
+  "description": "Hand-tracking practice in the browser, with a webcam: suturing on a wound pad, and guidewire insertion (Seldinger technique) for a central venous catheter.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "check": "tsc --noEmit",
     "preview": "vite preview",
-    "deploy": "node scripts/deploy.mjs"
+    "deploy": "node scripts/deploy.mjs",
+    "test": "node scripts/check-suture.mts && node scripts/check-guidewire.mts"
   },
   "devDependencies": {
     "typescript": "5.9.3",

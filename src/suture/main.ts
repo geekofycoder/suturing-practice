@@ -1,20 +1,25 @@
-import './style.css';
+import '../common/style.css';
 import { CameraError, closeCamera, openCamera } from '../capture/camera.ts';
 import { Tracker } from '../capture/tracker.ts';
 import type { RawResult, TrackerEvent, TrackerSettings } from '../capture/tracker.ts';
-import { norm } from './geometry.ts';
-import type { Vec2 } from './geometry.ts';
-import type { RawHandLike } from './hand-input.ts';
+import { clamp, norm, smoothstep } from '../common/geometry.ts';
+import type { Vec2 } from '../common/geometry.ts';
+import type { RawHandLike } from '../common/hand-input.ts';
 import type { Hand } from './pad.ts';
 import { STITCH_COUNT } from './pad.ts';
 import { Pipeline } from './pipeline.ts';
-import { ThreadView, ToolView, drawGhost, drawScene, needleAttach } from './render.ts';
+import { drawGhost } from '../common/draw.ts';
+import { ThreadView, ToolView, drawScene, needleAttach } from './render.ts';
 import { demoHands, demoSchedule } from './script.ts';
 import { STEP_TITLES } from './steps.ts';
 import type { Snapshot, StepId } from './steps.ts';
 
 const TEMPLATE = `
 <div class="shell">
+  <nav class="tabs" aria-label="Practice activities">
+    <a href="./" aria-current="page">Suturing</a>
+    <a href="guidewire.html">Guidewire insertion</a>
+  </nav>
   <header class="top">
     <h1>Suturing practice</h1>
     <p>Close a wound with five interrupted stitches on a virtual pad. Your pinch points hold the instruments, and each step tells you what to do next. This is practice on a pad, not training for a real patient.</p>
@@ -70,7 +75,7 @@ const TEMPLATE = `
       <section class="block" id="result" hidden>
         <h2>Wound closed</h2>
         <dl class="stats" id="stats"></dl>
-        <p class="muted">Pulling the thread through draws the edges together; the knots are not in this page yet. These numbers are for practice, and the steps, marks and tolerances are placeholders until a clinician reviews them.</p>
+        <p class="muted">Pulling the thread through draws the edges together, and each knot is drawn for you: tying knots is not practised in this version. These numbers are for practice, and the steps, marks and tolerances are placeholders until a clinician reviews them.</p>
       </section>
 
       <details class="block settings">
@@ -190,11 +195,24 @@ let needleView = new ToolView(pipeline.pad.tray.needle);
 let forcepsView = new ToolView(pipeline.pad.tray.forceps);
 let threadView = new ThreadView();
 let healed = 0;
+/** What is drawn for each stitch: how tight the wound is drawn at it, and how far its knot has settled in. */
+let closureView: number[] = pipeline.pad.sites.map(() => 0);
+let tieView: number[] = pipeline.pad.sites.map(() => 0);
+/** Seconds since the last stitch, which times the healing over. */
+let healClock = 0;
 let ghostKey = '';
 let lastText = '';
 let lastPhaseKey = '';
 let lastDotsKey = '';
 let lastButtonKey = '';
+
+/** The wound goes back to open, with no knots and no healing. */
+function resetView(): void {
+  healed = 0;
+  healClock = 0;
+  closureView = pipeline.pad.sites.map(() => 0);
+  tieView = pipeline.pad.sites.map(() => 0);
+}
 
 function rebuild(nextAspect: number): void {
   aspect = nextAspect;
@@ -203,7 +221,7 @@ function rebuild(nextAspect: number): void {
   needleView = new ToolView(pipeline.pad.tray.needle);
   forcepsView = new ToolView(pipeline.pad.tray.forceps);
   threadView = new ThreadView();
-  healed = 0;
+  resetView();
   stage.style.aspectRatio = `${aspect}`;
   ghostKey = '';
   lastText = '';
@@ -433,6 +451,7 @@ function showResult(snap: Snapshot): void {
     ['Needle dropped', String(m.needleDrops)],
     ['Left the lane', String(m.leftLane)],
     ['Forceps slipped', String(m.forcepsLapses)],
+    ['Thread slipped back', String(m.pullRetries)],
     ['Steps skipped', String(m.skipped)],
     ['Distance from the line', meanDev === null ? 'n/a' : `${Math.round(meanDev * 100)}% of the lane`],
   ];
@@ -453,11 +472,21 @@ function frame(nowMs: number): void {
   needleView.update(pipeline.tools.needle, dt);
   forcepsView.update(pipeline.tools.forceps, dt);
   const pad = pipeline.pad;
+  const siteIndex = Math.max(0, snap.sites.findIndex((s) => s.state === 'now'));
   const site = snap.sites.find((s) => s.state === 'now') ?? snap.sites[snap.sites.length - 1];
+  const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // The wound follows the pull almost directly. If the thread slips back it springs open quickly, and a knot settles in.
+  snap.sites.forEach((st, i) => {
+    const tau = st.closed > closureView[i] ? 0.05 : reduceMotion ? 0.03 : 0.09;
+    closureView[i] += (st.closed - closureView[i]) * (1 - Math.exp(-dt / tau));
+    tieView[i] = st.state === 'done' ? tieView[i] + (1 - tieView[i]) * (1 - Math.exp(-dt / (reduceMotion ? 0.02 : 0.09))) : 0;
+  });
   const tailDir = norm({ x: pad.dominant === 'R' ? -0.7 : 0.7, y: 0.7 });
-  const tailLen = 0.5 + (0.07 - 0.5) * snap.pullProgress;
+  const tailLen = 0.5 + (0.07 - 0.5) * clamp(closureView[siteIndex] ?? 0, 0, 1);
   threadView.update(needleAttach(needleView.pos, needleView.angle), { x: site.entry.x + tailDir.x * tailLen, y: site.entry.y + tailDir.y * tailLen }, dt);
-  healed += ((snap.done ? 1 : 0) - healed) * (1 - Math.exp(-dt / 0.6));
+  // Healing starts a moment after the last knot and spreads out from the middle; with reduced motion it is a short fade.
+  healClock = snap.done ? healClock + dt : 0;
+  healed = smoothstep(clamp((healClock - (reduceMotion ? 0.1 : 0.5)) / (reduceMotion ? 0.6 : 3.4), 0, 1));
 
   const ghost = ghostFor(snap);
   drawScene(sceneCanvas, {
@@ -469,6 +498,8 @@ function frame(nowMs: number): void {
     forcepsTool: pipeline.tools.forceps,
     thread: threadView,
     healed,
+    closure: closureView,
+    tie: tieView,
     hands: pipeline.seen,
     aspect,
     showSkeleton: prefs.skeleton && mode !== 'idle',
@@ -524,7 +555,7 @@ function restart(): void {
   needleView.reset();
   forcepsView.reset();
   threadView.reset();
-  healed = 0;
+  resetView();
   lastText = '';
   lastPhaseKey = '';
   lastDotsKey = '';

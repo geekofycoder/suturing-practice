@@ -1,0 +1,81 @@
+/* Only what the guidewire page adds to the shared styles. */
+
+.steps li.group {
+  display: block;
+  margin: 10px 0 2px;
+  padding: 0 8px;
+  border: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.steps li.group:first-child {
+  margin-top: 0;
+}
+
+.sources summary {
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.sources[open] summary {
+  margin-bottom: 4px;
+}
+
+.steps .why {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.steps .flag {
+  display: block;
+  margin-top: 6px;
+  padding: 4px 8px;
+  border-left: 3px solid #b7791f;
+  border-radius: 4px;
+  background: var(--hover);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+.sources ul {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.sources li {
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+.sources li b {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.sources h3 {
+  margin: 14px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.notice {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--hover);
+  font-size: 13px;
+  text-wrap: pretty;
+}

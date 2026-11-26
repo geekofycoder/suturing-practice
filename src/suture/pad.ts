@@ -1,5 +1,5 @@
-import type { Vec2 } from './geometry.ts';
-import { norm, sub } from './geometry.ts';
+import type { Vec2 } from '../common/geometry.ts';
+import { norm, sub } from '../common/geometry.ts';
 
 export type Hand = 'R' | 'L';
 

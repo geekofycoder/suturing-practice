@@ -1,8 +1,8 @@
-import { lerp, norm, smoothstep } from './geometry.ts';
-import type { Vec2 } from './geometry.ts';
-import type { RawHandLike } from './hand-input.ts';
+import { lerp, norm, smoothstep } from '../common/geometry.ts';
+import type { Vec2 } from '../common/geometry.ts';
+import type { RawHandLike } from '../common/hand-input.ts';
 import type { Pad } from './pad.ts';
-import { syntheticHand } from './synthetic.ts';
+import { syntheticHand } from '../common/synthetic.ts';
 
 interface Key {
   t: number;

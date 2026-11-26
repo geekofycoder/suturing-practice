@@ -1,20 +1,14 @@
-import { add, clamp, lerp, mul, perp, sub } from './geometry.ts';
-import type { Vec2 } from './geometry.ts';
-import type { Sides } from './identity.ts';
+import { add, clamp, lerp, mul, norm, perp, smoothstep, sub } from '../common/geometry.ts';
+import { ACCENT, aimDot, drawSkeleton, haloText, label, prepare, P } from '../common/draw.ts';
+import type { Ctx } from '../common/draw.ts';
+import type { Vec2 } from '../common/geometry.ts';
+import type { Sides } from '../common/identity.ts';
 import type { Pad } from './pad.ts';
 import type { ToolState } from './pipeline.ts';
 import type { SiteView, Snapshot } from './steps.ts';
-import { handPoints } from './synthetic.ts';
 
-const SIDE_COLOUR = { L: '#56b4e9', R: '#e69f00' };
-const ACCENT = '#2fd3c0';
 const AMBER = '#ffb84d';
 const THREAD = '#2d5bd1';
-const FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif";
-const BONES: [number, number][] = [
-  [0, 1], [1, 2], [2, 3], [3, 4], [0, 5], [5, 6], [6, 7], [7, 8], [5, 9], [9, 10], [10, 11], [11, 12],
-  [9, 13], [13, 14], [14, 15], [15, 16], [13, 17], [17, 18], [18, 19], [19, 20], [0, 17],
-];
 
 /** How an instrument is drawn: it glides to the hand when picked up, follows it smoothly between tracker results, and stays put if dropped. */
 export class ToolView {
@@ -87,8 +81,12 @@ export interface SceneView {
   needleTool: ToolState;
   forcepsTool: ToolState;
   thread: ThreadView;
-  /** How closed the wound looks after the last stitch, 0 to 1. */
+  /** How far healing has got after the last stitch, 0 to 1. It starts at the middle of the wound and spreads outward. */
   healed: number;
+  /** How tightly each stitch has drawn the wound together, as drawn (smoothed), in the order of `snap.sites`. */
+  closure: number[];
+  /** How far each placed stitch's knot has settled in, 0 to 1. */
+  tie: number[];
   hands: Sides;
   aspect: number;
   showSkeleton: boolean;
@@ -100,62 +98,73 @@ export interface SceneView {
   hintCaption: { pos: Vec2; text: string } | null;
 }
 
-interface Ctx {
-  ctx: CanvasRenderingContext2D;
-  k: number;
-  w: number;
-  h: number;
+
+const TAU = Math.PI * 2;
+const smooth01 = (t: number): number => smoothstep(clamp(t, 0, 1));
+type RGB = [number, number, number];
+const BLOOD: RGB = [112, 36, 46];
+const SCAR: RGB = [226, 160, 152];
+const mixRgb = (a: RGB, b: RGB, t: number): string => `${Math.round(a[0] + (b[0] - a[0]) * t)},${Math.round(a[1] + (b[1] - a[1]) * t)},${Math.round(a[2] + (b[2] - a[2]) * t)}`;
+
+/** A gentle irregularity along the wound. Both edges use it, so they fit together as a seam when they meet. */
+function wobble(x: number): number {
+  return 0.0022 * Math.sin(x * 31 + 0.6) + 0.0013 * Math.sin(x * 83 + 2.1) + 0.0008 * Math.sin(x * 157 + 4.2);
 }
 
-function prepare(canvas: HTMLCanvasElement): Ctx | null {
-  const dpr = window.devicePixelRatio || 1;
-  const w = canvas.clientWidth;
-  const h = canvas.clientHeight;
-  if (!w || !h) return null;
-  const bw = Math.round(w * dpr);
-  const bh = Math.round(h * dpr);
-  if (canvas.width !== bw || canvas.height !== bh) {
-    canvas.width = bw;
-    canvas.height = bh;
+/** Skin pores: a fixed scatter over the pad (0 to 1 each way), so the texture does not shimmer from frame to frame. */
+const PORES = (() => {
+  let seed = 7;
+  const rnd = (): number => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  return Array.from({ length: 280 }, () => ({ u: rnd(), v: rnd(), r: 0.0011 + rnd() * 0.0017 }));
+})();
+
+/** How tightly the nearest stitches have drawn the wound together at x, 0 to 1. */
+function closureAt(x: number, pad: Pad, closure: number[]): number {
+  let m = 0;
+  for (let i = 0; i < pad.sites.length; i++) m = Math.max(m, (closure[i] ?? 0) * Math.exp(-(((x - pad.sites[i].x) / 0.1) ** 2)));
+  return m;
+}
+
+/** How far healing has got at x: it starts in the middle, where the first stitch went, and spreads outward. */
+function healAt(x: number, pad: Pad, healed: number): number {
+  const mid = (pad.wound.a.x + pad.wound.b.x) / 2;
+  const half = (pad.wound.b.x - pad.wound.a.x) / 2;
+  return smooth01(healed * 1.5 - (0.5 * Math.abs(x - mid)) / half);
+}
+
+/** How open the wound is at x: wide where nothing is stitched, drawn together near each stitch, pointed at the ends. */
+function gapAt(x: number, s: SceneView): number {
+  const { pad } = s;
+  const end = smooth01(Math.min(x - pad.wound.a.x, pad.wound.b.x - x) / 0.07);
+  return pad.gap0 * (1 - 0.9 * closureAt(x, pad, s.closure)) * (1 - 0.85 * healAt(x, pad, s.healed)) * (0.12 + 0.88 * end);
+}
+
+/** Strokes a polyline one short segment at a time, so the colour can change along it. */
+function strokeSegments(c: Ctx, xs: number[], ys: number[], width: number, style: (i: number) => string | null): void {
+  const { ctx, k } = c;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'butt';
+  for (let i = 0; i < xs.length - 1; i++) {
+    const st = style(i);
+    if (!st) continue;
+    ctx.strokeStyle = st;
+    ctx.beginPath();
+    ctx.moveTo(xs[i] * k, ys[i] * k);
+    ctx.lineTo(xs[i + 1] * k, ys[i + 1] * k);
+    ctx.stroke();
   }
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-  return { ctx, k: h, w, h };
 }
 
-const P = (c: Ctx, p: Vec2): [number, number] => [p.x * c.k, p.y * c.k];
-
-/** Text with a dark halo, so it reads over a skin-coloured pad, a dark backdrop or a live picture alike. */
-function haloText(c: Ctx, text: string, at: Vec2, size: number, fill = '#ffffff'): void {
-  const { ctx } = c;
-  const px = Math.max(11, size * c.k);
-  ctx.font = `700 ${px}px ${FONT}`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const [x, y] = P(c, at);
-  ctx.lineJoin = 'round';
-  ctx.lineWidth = Math.max(3, px * 0.3);
-  ctx.strokeStyle = 'rgba(0,0,0,0.75)';
-  ctx.strokeText(text, x, y);
-  ctx.fillStyle = fill;
-  ctx.fillText(text, x, y);
-}
-
-/** How far apart the wound edges are at x: open where nothing is stitched, drawn together near each stitch. */
-function gapAt(x: number, pad: Pad, sites: SiteView[], healed: number): number {
-  let closure = 0;
-  for (const s of sites) closure = Math.max(closure, s.closed * Math.exp(-(((x - s.x) / 0.1) ** 2)));
-  return pad.gap0 * (1 - 0.88 * closure) * (1 - 0.85 * healed);
-}
-
+/** The pad, its skin, and the wound: how open it is, bunched and raised by the stitches, and then healing over. */
 function drawPad(c: Ctx, s: SceneView): void {
   const { ctx, k } = c;
-  const { pad, snap, padAlpha: alpha } = s;
+  const { pad, padAlpha: alpha } = s;
   const r = pad.rect;
-  ctx.beginPath();
-  ctx.roundRect(r.x * k, r.y * k, r.w * k, r.h * k, 0.05 * k);
+  const padPath = (): void => {
+    ctx.beginPath();
+    ctx.roundRect(r.x * k, r.y * k, r.w * k, r.h * k, 0.05 * k);
+  };
+  padPath();
   const fill = ctx.createLinearGradient(0, r.y * k, 0, (r.y + r.h) * k);
   fill.addColorStop(0, `rgba(237,192,169,${alpha})`);
   fill.addColorStop(1, `rgba(217,157,135,${alpha})`);
@@ -172,30 +181,107 @@ function drawPad(c: Ctx, s: SceneView): void {
   ctx.strokeStyle = `rgba(182,113,93,${Math.min(1, alpha + 0.3)})`;
   ctx.stroke();
 
-  // The wound, with the opening varying along it.
   const { a, b } = pad.wound;
-  const steps = 64;
-  const top: [number, number][] = [];
-  const bottom: [number, number][] = [];
-  for (let i = 0; i <= steps; i++) {
-    const x = a.x + ((b.x - a.x) * i) / steps;
-    const half = gapAt(x, pad, snap.sites, s.healed) / 2;
-    top.push([x * k, (a.y - half) * k]);
-    bottom.push([x * k, (a.y + half) * k]);
-  }
+  const N = 96;
+  const xs = Array.from({ length: N + 1 }, (_, i) => a.x + ((b.x - a.x) * i) / N);
+  const clo = xs.map((x) => closureAt(x, pad, s.closure));
+  const heal = xs.map((x) => healAt(x, pad, s.healed));
+  const half = xs.map((x) => gapAt(x, s) / 2);
+  const mid = xs.map((x) => a.y + wobble(x));
+  const top = mid.map((y, i) => y - half[i]);
+  const bottom = mid.map((y, i) => y + half[i]);
+  const avg = (arr: number[], i: number): number => (arr[i] + arr[i + 1]) / 2;
+
+  // Skin texture, and the red flush round the wound: it deepens where the stitches pull, and fades as it heals.
+  ctx.save();
+  padPath();
+  ctx.clip();
   ctx.beginPath();
-  top.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-  for (let i = bottom.length - 1; i >= 0; i--) ctx.lineTo(bottom[i][0], bottom[i][1]);
-  ctx.closePath();
-  ctx.fillStyle = `rgba(112,36,46,${0.5 + 0.45 * alpha})`;
-  ctx.fill();
-  for (const [edge, colour] of [[top, 'rgba(250,222,208,0.95)'], [bottom, 'rgba(190,120,100,0.95)']] as const) {
-    ctx.beginPath();
-    edge.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-    ctx.lineWidth = Math.max(2, 0.005 * k);
-    ctx.strokeStyle = colour;
-    ctx.stroke();
+  for (const p of PORES) {
+    const x = (r.x + p.u * r.w) * k;
+    const y = (r.y + p.v * r.h) * k;
+    const rad = p.r * k;
+    ctx.moveTo(x + rad, y);
+    ctx.arc(x, y, rad, 0, TAU);
   }
+  ctx.fillStyle = `rgba(150,92,78,${0.2 * alpha})`;
+  ctx.fill();
+  const flushH = 0.075;
+  const flush = ctx.createLinearGradient(0, (a.y - flushH) * k, 0, (a.y + flushH) * k);
+  flush.addColorStop(0, 'rgba(224,92,92,0)');
+  flush.addColorStop(0.5, 'rgba(224,92,92,1)');
+  flush.addColorStop(1, 'rgba(224,92,92,0)');
+  ctx.fillStyle = flush;
+  for (let i = 0; i < N; i += 2) {
+    const x0 = xs[i];
+    const x1 = xs[i + 2];
+    const xm = (x0 + x1) / 2;
+    const red = (0.3 + 0.7 * closureAt(xm, pad, s.closure)) * (1 - healAt(xm, pad, s.healed)) * smooth01(Math.min(xm - a.x, b.x - xm) / 0.1);
+    ctx.globalAlpha = 0.36 * alpha * red;
+    ctx.fillRect(x0 * k - 0.5, (a.y - flushH) * k, (x1 - x0) * k + 1, 2 * flushH * k);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  // The opening itself: blood-red, turning pink as it heals, with some depth to it while it is open.
+  const bodyAlpha = 0.5 + 0.45 * alpha;
+  ctx.beginPath();
+  xs.forEach((x, i) => (i ? ctx.lineTo(x * k, top[i] * k) : ctx.moveTo(x * k, top[i] * k)));
+  for (let i = N; i >= 0; i--) ctx.lineTo(xs[i] * k, bottom[i] * k);
+  ctx.closePath();
+  const body = ctx.createLinearGradient(a.x * k, 0, b.x * k, 0);
+  for (let i = 0; i <= 12; i++) body.addColorStop(i / 12, `rgba(${mixRgb(BLOOD, SCAR, healAt(a.x + ((b.x - a.x) * i) / 12, pad, s.healed))},${bodyAlpha})`);
+  ctx.fillStyle = body;
+  ctx.fill();
+  ctx.save();
+  ctx.clip();
+  const depth = ctx.createLinearGradient(0, (a.y - 0.02) * k, 0, (a.y + 0.02) * k);
+  depth.addColorStop(0, 'rgba(40,6,12,0)');
+  depth.addColorStop(0.5, `rgba(40,6,12,${0.55 * (1 - s.healed)})`);
+  depth.addColorStop(1, 'rgba(40,6,12,0)');
+  ctx.fillStyle = depth;
+  ctx.fillRect(a.x * k, (a.y - 0.03) * k, (b.x - a.x) * k, 0.06 * k);
+  ctx.restore();
+  // A wet shine along the middle of the open part.
+  strokeSegments(c, xs, mid, Math.max(1, 0.0016 * k), (i) => {
+    const open = (1 - avg(clo, i)) * (1 - avg(heal, i));
+    return open > 0.05 ? `rgba(255,222,222,${0.26 * open})` : null;
+  });
+
+  // The two edges of the skin: they fade as the wound heals over.
+  const edgeWidth = Math.max(2, 0.005 * k);
+  strokeSegments(c, xs, top, edgeWidth, (i) => `rgba(250,222,208,${0.95 * (1 - 0.8 * avg(heal, i))})`);
+  strokeSegments(c, xs, bottom, edgeWidth, (i) => `rgba(190,120,100,${0.95 * (1 - 0.8 * avg(heal, i))})`);
+
+  // Where the stitches have drawn the edges together, the skin stands up a little along the seam (eversion).
+  const ridge = (i: number): number => smooth01((avg(clo, i) - 0.25) / 0.6) * (1 - 0.75 * avg(heal, i));
+  strokeSegments(c, xs, mid.map((y) => y - 0.0042), Math.max(1.5, 0.004 * k), (i) => (ridge(i) > 0.02 ? `rgba(255,238,228,${0.6 * ridge(i) * alpha})` : null));
+  strokeSegments(c, xs, mid.map((y) => y + 0.0046), Math.max(1.5, 0.0045 * k), (i) => (ridge(i) > 0.02 ? `rgba(140,72,64,${0.5 * ridge(i) * alpha})` : null));
+
+  // Healed: the seam settles into a faint pink line.
+  strokeSegments(c, xs, mid, Math.max(2, 0.0065 * k), (i) => (avg(heal, i) > 0.02 ? `rgba(240,190,185,${0.24 * avg(heal, i) * alpha})` : null));
+
+  // The skin bunches in small folds beside a stitch as it is drawn tight.
+  ctx.lineCap = 'round';
+  ctx.lineWidth = Math.max(1, 0.0022 * k);
+  pad.sites.forEach((site, i) => {
+    const cl = s.closure[i] ?? 0;
+    if (cl < 0.03) return;
+    const fade = 1 - healAt(site.x, pad, s.healed);
+    if (fade < 0.02) return;
+    ctx.strokeStyle = `rgba(128,66,58,${0.4 * alpha * cl * fade})`;
+    for (const side of [-1, 1]) {
+      for (let j = 0; j < 4; j++) {
+        const x0 = site.x + (j - 1.5) * 0.015;
+        const y0 = a.y + wobble(x0) + side * (gapAt(x0, s) / 2 + 0.005);
+        const len = 0.03 + 0.008 * Math.abs(j - 1.5);
+        ctx.beginPath();
+        ctx.moveTo(x0 * k, y0 * k);
+        ctx.quadraticCurveTo((x0 + (site.x - x0) * 0.1) * k, (y0 + side * len * 0.55) * k, (x0 + (site.x - x0) * 0.35) * k, (y0 + side * len) * k);
+        ctx.stroke();
+      }
+    }
+  });
 }
 
 type RingMode = 'active' | 'dim' | 'holding' | 'lapsed';
@@ -230,42 +316,119 @@ function ring(c: Ctx, pos: Vec2, radius: number, mode: RingMode, label: string, 
   if (label) haloText(c, label, { x: pos.x, y: pos.y - radius - 0.04 }, 0.026, mode === 'lapsed' ? AMBER : '#ffffff');
 }
 
-/** A placed stitch: the thread across the wound, with a short tail at each end. */
-function drawStitch(c: Ctx, s: SiteView, tailSign: number): void {
+/** Where the thread goes into and comes out of the skin: a small dimple, a pale rim and the puncture itself. */
+function punctures(c: Ctx, pts: Vec2[], strength: number, fx: number): void {
   const { ctx, k } = c;
-  const [ex, ey] = P(c, s.entry);
-  const [xx, xy] = P(c, s.exit);
-  ctx.lineCap = 'round';
-  for (const pass of [0, 1]) {
-    ctx.strokeStyle = pass === 0 ? 'rgba(0,0,0,0.45)' : THREAD;
-    ctx.lineWidth = pass === 0 ? Math.max(4, 0.009 * k) : Math.max(2, 0.005 * k);
+  for (const p of pts) {
+    const [x, y] = P(c, p);
+    const dimple = ctx.createRadialGradient(x, y, 0, x, y, 0.032 * k);
+    dimple.addColorStop(0, `rgba(116,58,50,${0.34 * fx * strength})`);
+    dimple.addColorStop(1, 'rgba(116,58,50,0)');
+    ctx.fillStyle = dimple;
     ctx.beginPath();
-    ctx.moveTo(ex, ey);
-    ctx.lineTo(xx, xy);
-    ctx.stroke();
+    ctx.arc(x, y, 0.032 * k, 0, TAU);
+    ctx.fill();
     ctx.beginPath();
-    ctx.moveTo(ex, ey);
-    ctx.quadraticCurveTo(ex + tailSign * 0.02 * k, ey + 0.04 * k, ex + tailSign * 0.07 * k, ey + 0.065 * k);
-    ctx.stroke();
+    ctx.arc(x, y, Math.max(3, 0.0095 * k), 0, TAU);
+    ctx.fillStyle = `rgba(255,226,216,${0.5 * fx})`;
+    ctx.fill();
     ctx.beginPath();
-    ctx.moveTo(xx, xy);
-    ctx.quadraticCurveTo(xx - tailSign * 0.02 * k, xy - 0.03 * k, xx - tailSign * 0.06 * k, xy - 0.05 * k);
-    ctx.stroke();
-  }
-  for (const [px, py] of [[ex, ey], [xx, xy]]) {
-    ctx.beginPath();
-    ctx.arc(px, py, Math.max(2.5, 0.007 * k), 0, Math.PI * 2);
-    ctx.fillStyle = '#3a1218';
+    ctx.arc(x, y, Math.max(2.2, 0.0058 * k), 0, TAU);
+    ctx.fillStyle = '#4a141c';
     ctx.fill();
   }
+}
+
+/** The knot of an interrupted stitch: it sits to one side of the wound, never on it, with two short cut ends. */
+function drawKnot(c: Ctx, s: SiteView, tailSign: number, tie: number, fx: number): void {
+  if (tie < 0.02) return;
+  const { ctx, k } = c;
+  const dir = norm(sub(s.exit, s.entry));
+  const at = lerp(s.entry, s.exit, 0.36);
+  const [x, y] = P(c, at);
+  const grow = 0.86 + 0.14 * tie;
+  const away = Math.atan2(-dir.y, -dir.x);
+  const w = Math.max(2.2, 0.0048 * k);
+  ctx.save();
+  ctx.globalAlpha = clamp(tie * 1.3, 0, 1);
+  ctx.lineCap = 'butt';
+  for (const [spread, len, curl] of [[0.72, 0.058, 0.35], [-0.32, 0.046, -0.3]] as const) {
+    const ang = away + spread * tailSign;
+    const end: [number, number] = [x + Math.cos(ang) * len * k * grow, y + Math.sin(ang) * len * k * grow];
+    const ctl: [number, number] = [x + Math.cos(ang + curl * tailSign) * len * 0.55 * k, y + Math.sin(ang + curl * tailSign) * len * 0.55 * k];
+    for (const pass of [0, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(x + (pass === 0 ? 0.0015 * k : 0), y + (pass === 0 ? 0.003 * k : 0));
+      ctx.quadraticCurveTo(ctl[0] + (pass === 0 ? 0.0015 * k : 0), ctl[1] + (pass === 0 ? 0.003 * k : 0), end[0] + (pass === 0 ? 0.0015 * k : 0), end[1] + (pass === 0 ? 0.003 * k : 0));
+      ctx.lineWidth = pass === 0 ? w + 1.5 : w;
+      ctx.strokeStyle = pass === 0 ? `rgba(50,14,14,${0.28 * fx})` : THREAD;
+      ctx.stroke();
+    }
+  }
+  ctx.translate(x, y);
+  ctx.rotate(Math.atan2(dir.y, dir.x));
+  ctx.scale(grow, grow);
+  ctx.beginPath();
+  ctx.ellipse(0.003 * k, 0.005 * k, 0.017 * k, 0.0125 * k, 0, 0, TAU);
+  ctx.fillStyle = `rgba(40,10,10,${0.3 * fx})`;
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 0.0165 * k, 0.0115 * k, 0, 0, TAU);
+  ctx.fillStyle = '#2a4db3';
+  ctx.fill();
+  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = 'rgba(8,16,60,0.7)';
+  ctx.stroke();
+  for (const dx of [-0.006, 0.007]) {
+    ctx.beginPath();
+    ctx.ellipse(dx * k, 0, 0.0085 * k, 0.0095 * k, 0, 0, TAU);
+    ctx.fillStyle = '#3a5fcb';
+    ctx.fill();
+  }
+  ctx.beginPath();
+  ctx.ellipse(-0.003 * k, -0.004 * k, 0.005 * k, 0.0028 * k, -0.3, 0, TAU);
+  ctx.fillStyle = 'rgba(190,210,255,0.7)';
+  ctx.fill();
+  ctx.restore();
+}
+
+/** A placed stitch: the thread across the wound, pulled taut, the knot to one side of it, and the two punctures. */
+function drawStitch(c: Ctx, s: SiteView, tailSign: number, tie: number, fx: number): void {
+  const { ctx, k } = c;
+  const w = Math.max(2.6, 0.0055 * k);
+  const off = 0.0035 * k;
+  const [ex, ey] = P(c, s.entry);
+  const [xx, xy] = P(c, s.exit);
+  punctures(c, [s.entry, s.exit], 1, fx);
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(ex + off * 0.6, ey + off);
+  ctx.lineTo(xx + off * 0.6, xy + off);
+  ctx.lineWidth = w + 2;
+  ctx.strokeStyle = `rgba(50,14,14,${0.3 * fx})`;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(ex, ey);
+  ctx.lineTo(xx, xy);
+  ctx.lineWidth = w;
+  ctx.strokeStyle = THREAD;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(ex - 0.6, ey - 0.9);
+  ctx.lineTo(xx - 0.6, xy - 0.9);
+  ctx.lineWidth = Math.max(1, w * 0.32);
+  ctx.strokeStyle = 'rgba(170,196,255,0.55)';
+  ctx.stroke();
+  drawKnot(c, s, tailSign, tie, fx);
 }
 
 function drawSites(c: Ctx, s: SceneView): void {
   const { ctx, k } = c;
   const { pad, snap } = s;
   const tailSign = pad.dominant === 'R' ? -1 : 1;
-  for (const site of snap.sites) {
-    if (site.state === 'done') drawStitch(c, site, tailSign);
+  const fx = 0.4 + 0.6 * s.padAlpha;
+  for (const [i, site] of snap.sites.entries()) {
+    if (site.state === 'done') drawStitch(c, site, tailSign, s.tie[i] ?? 1, fx);
     else if (site.state === 'todo') {
       const [x, y] = P(c, { x: site.x, y: pad.wound.a.y });
       ctx.beginPath();
@@ -292,7 +455,11 @@ function drawSites(c: Ctx, s: SceneView): void {
   else if (step === 'hold' || step === 'enter') ring(c, now.exit, pad.exitRadius, 'dim', 'Exit');
   if (step === 'pull') {
     const target = snap.target;
-    if (target.pos && target.radius) ring(c, target.pos, target.radius, 'active', 'Pull up to here', snap.progress);
+    if (!snap.pullArmed) {
+      // The thread has slipped back: the exit ring is the place to start again, and the far ring waits.
+      ring(c, now.exit, pad.exitRadius, 'active', 'Start the pull again here');
+      if (target.pos && target.radius) ring(c, target.pos, target.radius, 'dim', 'Pull up to here');
+    } else if (target.pos && target.radius) ring(c, target.pos, target.radius, 'active', 'Pull up to here', snap.progress);
   }
   if (step === 'drive') {
     const n = perp(pad.dir);
@@ -416,57 +583,8 @@ function drawForceps(c: Ctx, pos: Vec2, angle: number, alpha: number): void {
   ctx.restore();
 }
 
-/** A small dot exactly at an instrument's tip, so it is plain where the tip is relative to the rings. */
-function aimDot(c: Ctx, pos: Vec2, held: boolean): void {
-  const { ctx } = c;
-  const [x, y] = P(c, pos);
-  const r = Math.max(4, 0.012 * c.k);
-  ctx.beginPath();
-  ctx.arc(x, y, r + 2, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(0,0,0,0.7)';
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fillStyle = held ? ACCENT : '#ffffff';
-  ctx.fill();
-}
 
-function drawSkeleton(c: Ctx, hands: Sides, aspect: number): void {
-  const { ctx, k } = c;
-  ctx.lineCap = 'round';
-  for (const side of ['L', 'R'] as const) {
-    const hand = hands[side];
-    if (!hand) continue;
-    const at = (i: number): [number, number] => [(1 - hand.lm[i * 3]) * aspect * k, hand.lm[i * 3 + 1] * k];
-    ctx.strokeStyle = SIDE_COLOUR[side];
-    ctx.globalAlpha = 0.7;
-    ctx.lineWidth = Math.max(1.5, 0.003 * k);
-    ctx.beginPath();
-    for (const [f, t] of BONES) {
-      const [fx, fy] = at(f);
-      const [tx, ty] = at(t);
-      ctx.moveTo(fx, fy);
-      ctx.lineTo(tx, ty);
-    }
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-  }
-}
 
-function label(c: Ctx, text: string, at: Vec2, below: number): void {
-  const { ctx, k } = c;
-  ctx.font = `700 ${Math.max(11, 0.026 * k)}px ${FONT}`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'alphabetic';
-  const [x, y] = P(c, at);
-  const w = ctx.measureText(text).width;
-  ctx.fillStyle = 'rgba(0,0,0,0.65)';
-  ctx.beginPath();
-  ctx.roundRect(x - w / 2 - 8, y + below * k - 14, w + 16, 22, 6);
-  ctx.fill();
-  ctx.fillStyle = '#fff';
-  ctx.fillText(text, x, y + below * k + 2);
-}
 
 export function drawScene(canvas: HTMLCanvasElement, s: SceneView): void {
   const c = prepare(canvas);
@@ -486,14 +604,19 @@ export function drawScene(canvas: HTMLCanvasElement, s: SceneView): void {
   const width = Math.max(2, 0.0048 * c.k);
   const now = snap.sites.find((x) => x.state === 'now');
   if (snap.step === 'pull' && now) {
-    // The thread runs through the tissue; a short tail stays at the entry, the rest runs to the needle holder.
+    // Under the skin the thread runs from the entry to the exit, so it is dashed; the punctures are where it comes out.
+    // A short tail stays at the entry, and the rest runs to the needle holder.
+    const fx = 0.4 + 0.6 * s.padAlpha;
+    c.ctx.setLineDash([0.012 * c.k, 0.01 * c.k]);
     c.ctx.beginPath();
     c.ctx.moveTo(now.entry.x * c.k, now.entry.y * c.k);
     c.ctx.lineTo(now.exit.x * c.k, now.exit.y * c.k);
     c.ctx.lineWidth = width;
-    c.ctx.lineCap = 'round';
-    c.ctx.strokeStyle = THREAD;
+    c.ctx.lineCap = 'butt';
+    c.ctx.strokeStyle = 'rgba(45,91,209,0.55)';
     c.ctx.stroke();
+    c.ctx.setLineDash([]);
+    punctures(c, [now.entry, now.exit], clamp(s.closure[snap.sites.indexOf(now)] ?? 0, 0, 1), fx);
     strand(c, now.entry, s.thread.tail, 0.03, width);
     const away = Math.hypot(nGeo.attach.x - now.exit.x, nGeo.attach.y - now.exit.y);
     strand(c, now.exit, nGeo.attach, Math.max(0.005, 0.12 - away * 0.25), width);
@@ -511,34 +634,3 @@ export function drawScene(canvas: HTMLCanvasElement, s: SceneView): void {
   if (s.showSkeleton) drawSkeleton(c, s.hands, s.aspect);
 }
 
-/**
- * A translucent hint hand, drawn solid on its own canvas. The page fades the whole canvas, so fingers that
- * overlap do not show through each other.
- */
-export function drawGhost(canvas: HTMLCanvasElement, show: { pos: Vec2; angle: number } | null): void {
-  const c = prepare(canvas);
-  if (!c || !show) return;
-  const { ctx, k } = c;
-  const pts = handPoints(show.pos, show.angle, true);
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
-  ctx.fillStyle = '#6fdcf0';
-  ctx.strokeStyle = '#6fdcf0';
-  ctx.beginPath();
-  for (const i of [0, 5, 9, 13, 17]) {
-    const [x, y] = P(c, pts[i]);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.closePath();
-  ctx.fill();
-  ctx.lineWidth = 0.03 * k;
-  ctx.beginPath();
-  for (const [f, t] of BONES) {
-    const [fx, fy] = P(c, pts[f]);
-    const [tx, ty] = P(c, pts[t]);
-    ctx.moveTo(fx, fy);
-    ctx.lineTo(tx, ty);
-  }
-  ctx.stroke();
-}

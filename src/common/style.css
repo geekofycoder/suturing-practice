@@ -76,6 +76,40 @@ a {
   padding: 20px 16px 48px;
 }
 
+/* ---- activity tabs ---- */
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs a {
+  margin-bottom: -1px;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius) var(--radius) 0 0;
+  color: var(--muted);
+  font-weight: 500;
+  text-decoration: none;
+  transition: color 140ms var(--ease-out), background-color 140ms var(--ease-out);
+}
+
+.tabs a[aria-current='page'] {
+  border-color: var(--border);
+  border-bottom-color: var(--bg);
+  background: var(--bg);
+  color: var(--text);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .tabs a:hover:not([aria-current='page']) {
+    color: var(--text);
+    background: var(--hover);
+  }
+}
+
 .top h1 {
   margin: 0 0 4px;
   font-size: 20px;
